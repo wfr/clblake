@@ -3,7 +3,7 @@
 =========
 
 ------------------------------------------------------------
- Experimental tree hasher using an OpenCL port of Blake-256
+ Experimental tree hasher using an OpenCL port of BLAKE-256
 ------------------------------------------------------------
 
 :date: $Date: Thu, 09 Aug 2012 16:10:51 +0200 $
@@ -16,15 +16,12 @@ About
 
 It includes 
 
-* a simplified OpenCL (OpenCL_) implementation of the Blake-256 (BlakeWikipedia_) algorithm
+* a simplified OpenCL (OpenCL_) implementation of the BLAKE-256 (BLAKEWikipedia_) algorithm
 
-* the reference implementation in C for the CPU
+* C, SSE2 and SSSE3 optimized CPU implementations of BLAKE-256
 
-* SSE2 and SSSE3 optimized versions, from the Supercop collection (SuperCop_)
-
-The tree can be tuned statically in BlakeTree.h.  Its height is fixed to 3. The
-top level is one master hash that is updated continously. Do note that the tree
-configuration affects the resulting hash.
+The "tree" can be tuned statically in BlakeTree.h.  Its height is only 2 at the moment.
+Do note that the tree configuration affects the resulting hash.
 
 This program is inspired by Keccak.Tree.GPU (KeccakTreeGPU_).
 
@@ -33,7 +30,7 @@ Tree hashing is implemented both for OpenCL and the CPU. The latter uses OpenMP 
 
 .. _OpenCL: http://www.khronos.org/opencl/
 
-.. _BlakeWikipedia: http://en.wikipedia.org/wiki/BLAKE_%28hash_function%29
+.. _BLAKEWikipedia: http://en.wikipedia.org/wiki/BLAKE_%28hash_function%29
 
 .. _SuperCop: http://bench.cr.yp.to/supercop.html
 
@@ -73,7 +70,7 @@ Output:
     GPU hash test...
     DEBUG: Using platform: NVIDIA CUDA
     DEBUG: Using OpenCL source: blake256.cl
-    DEBUG: 1118.7 MiB/s
+    DEBUG: 1716.2 MiB/s
 
 
 Using sparse files to test the optimal file throughput
@@ -133,10 +130,10 @@ along with this program.  If not, see (http://www.gnu.org/licenses/).
 
 The program includes modified 3rd party code:
 
-* Blake-256 SSE2 and SSSE3 optimizations from (SuperCop_).
+* BLAKE-256 SSE2 and SSSE3 optimizations from (SuperCop_).
 
   License: public domain
 
-* The Blake-256 reference implementation.
+* The BLAKE-256 reference implementation.
 
   License: public domain
