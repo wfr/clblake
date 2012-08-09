@@ -1,12 +1,16 @@
-/* Blake hash algorithm
+/* BLAKE-256 hash algorithm in OpenCL
  *
- * Naive port of the reference implementation to OpenCL
  * Restrictions:
  * - block size must be a multiple of 64 bytes
  * - block size must be < 2^32 bytes
  *
- * Problems:
- * - not endian-safe. Only tested on Little Endian.
+ * Lessons learned:
+ * - byte-wise read access to global can be much slower than word-wise. 
+ *   => Copy 8-bit input to private memory.
+ *
+ * Failed optimization attempts:
+ * - Tried a lookup table for u256[sigma[a][b].
+ * - Tried to remove the conditional in the compression function.
  */
 
 #pragma OPENCL EXTENSION cl_khr_byte_addressable_store : enable 
@@ -21,6 +25,7 @@ typedef          char   int8_t;
 typedef          short  int16_t;
 typedef          int    int32_t;
 typedef          long   int64_t;
+
 
 #define U8TO32_BIG(p)         \
   (((uint32_t)((p)[0]) << 24) | ((uint32_t)((p)[1]) << 16) |  \
@@ -75,20 +80,6 @@ constant uint32_t u256[16] =
   0xc0ac29b7, 0xc97c50dd, 0x3f84d5b5, 0xb5470917
 };
 
-
-
-//// 256-bit
-// #undef ROT
-//#define ROT(x,n) (((x)<<(32-n))|( (x)>>(n)))
-//#define G(a,b,c,d,e)          \
-//  v[a] += (m[sigma[i][e]] ^ u256[sigma[i][e+1]]) + v[b]; \
-//  v[d] = ROT( v[d] ^ v[a],16);        \
-//  v[c] += v[d];           \
-//  v[b] = ROT( v[b] ^ v[c],12);        \
-//  v[a] += (m[sigma[i][e+1]] ^ u256[sigma[i][e]])+v[b]; \
-//  v[d] = ROT( v[d] ^ v[a], 8);        \
-//  v[c] += v[d];           \
-//  v[b] = ROT( v[b] ^ v[c], 7);
 //#define ROT32(x,n) (((x)<<(32-n))|( (x)>>(n)))
 #define ROT32(x,n)   (rotate((uint)x, (uint)32-n))
 #define ADD32(x,y)   ((uint)((x) + (y)))
@@ -96,26 +87,36 @@ constant uint32_t u256[16] =
 
 #define G(a,b,c,d,i) \
   do {\
-    v[a] = XOR32(m[sigma[r][i]], u256[sigma[r][i+1]])+ADD32(v[a],v[b]);\
-    v[d] = ROT32(XOR32(v[d],v[a]),16);\
-    v[c] = ADD32(v[c],v[d]);\
-    v[b] = ROT32(XOR32(v[b],v[c]),12);\
-    v[a] = XOR32(m[sigma[r][i+1]], u256[sigma[r][i]])+ADD32(v[a],v[b]); \
-    v[d] = ROT32(XOR32(v[d],v[a]), 8);\
-    v[c] = ADD32(v[c],v[d]);\
-    v[b] = ROT32(XOR32(v[b],v[c]), 7);\
+    v[a] += XOR32(m[sigma[r][i]], u256[sigma[r][i+1]]) + v[b];\
+    v[d]  = ROT32(XOR32(v[d],v[a]),16);\
+    v[c] += v[d];\
+    v[b]  = ROT32(XOR32(v[b],v[c]),12);\
+    v[a] += XOR32(m[sigma[r][i+1]], u256[sigma[r][i]]) + v[b]; \
+    v[d]  = ROT32(XOR32(v[d],v[a]), 8);\
+    v[c] += v[d];\
+    v[b]  = ROT32(XOR32(v[b],v[c]), 7);\
   } while (0)
 
-// compress a block
-// > if block == 0: finalize
-void blake256_compress_block( private state256 *S, global const uint8_t *block )
-{
-  uint32_t v[16], m[16], i;
 
+// compress a block
+// if block == 0, finalize
+void blake256_compress_block( private state256 *S, global const uint32_t *block )
+{
+  private uint32_t v[16], m[16], i;
+  private uint32_t m_temp[16];
+
+  // This conditional doesn't have a signifant performance impact
+  // (on my system).
   if(block != 0)
   {
-    //#pragma unroll 16
-    for( i = 0; i < 16; ++i )  m[i] = U8TO32_BIG( block + i * 4 );
+    // BLAKE uses Big Endian internally. GPUs are Little Endian.
+    // Byte-wise access to global memory seems to have a huge performance impact.
+    // It's much faster to copy the input block to a
+    // private buffer and do the conversion with that instead.
+    //
+    // ~40% on my system
+    for( i = 0; i < 16; ++i )  m_temp[i] = block[i];
+    for( i = 0; i < 16; ++i )  m[i] = U8TO32_BIG( (uint8_t*) &m_temp[i] );
   }
   else
   {
@@ -134,7 +135,7 @@ void blake256_compress_block( private state256 *S, global const uint8_t *block )
     };*/
     m[0] = 0x80000000;
     m[1] = m[2] = m[3] = m[4] = m[5] = m[6] = m[7] = 0;
-    m[8] = m[9] = m[10] = m[11] = m[12] = 0; m[13] = 1; m[14] = 0;
+    m[8] = m[9] = m[10] = m[11] = m[12] = 0; m[13] = 1; m[14] = 0; 
     m[15] = S->t;
   }
 
@@ -191,39 +192,48 @@ void blake256_init( private state256 *S )
 }
 
 
-void blake256_update( private state256 *S, global const uint8_t *in, uint32_t inlen )
+void blake256_update( private state256 *S, global const uint32_t *in, uint32_t inlen )
 {
   /* compress blocks of data received */
   while( inlen >= 64 )
   {
     S->t += 512;
     blake256_compress_block( S, in );
-    in += 64;
+    in += 16;
     inlen -= 64;
   }
 }
 
 
-void blake256_final( private state256 *S, global uint8_t *out)
+void blake256_final( private state256 *S, global uint32_t *out)
 {
   blake256_compress_block( S, 0 );
-  U32TO8_BIG( out + 0, S->h[0] );
-  U32TO8_BIG( out + 4, S->h[1] );
-  U32TO8_BIG( out + 8, S->h[2] );
-  U32TO8_BIG( out + 12, S->h[3] );
-  U32TO8_BIG( out + 16, S->h[4] );
-  U32TO8_BIG( out + 20, S->h[5] );
-  U32TO8_BIG( out + 24, S->h[6] );
-  U32TO8_BIG( out + 28, S->h[7] );
+
+  private uint8_t tmp[32];
+  U32TO8_BIG( tmp + 0, S->h[0] );
+  U32TO8_BIG( tmp + 4, S->h[1] );
+  U32TO8_BIG( tmp + 8, S->h[2] );
+  U32TO8_BIG( tmp + 12, S->h[3] );
+  U32TO8_BIG( tmp + 16, S->h[4] );
+  U32TO8_BIG( tmp + 20, S->h[5] );
+  U32TO8_BIG( tmp + 24, S->h[6] );
+  U32TO8_BIG( tmp + 28, S->h[7] );
+
+  for(int i = 0; i < 16; i++) 
+  {
+    out[i] = ((uint32_t*) tmp)[i];
+  }
 }
 
 
-kernel void blake256_hash_block( global uint8_t *out, global const uint8_t *in, const uint32_t chunk_size)
+kernel void blake256_hash_block( global uint8_t *out, global const uint32_t *in, const uint32_t chunk_size)
 {
   const int gx = get_global_id(0);
   const int lx = get_local_id(0);
 
-  global uint8_t* item_in  = &( in[gx * chunk_size]);
+  const int chunk_size_int = chunk_size / sizeof(uint32_t);
+
+  global uint8_t* item_in  = &( in[gx * chunk_size_int]);
   global uint8_t* item_out = &(out[gx * 32]);
   private state256 S;
   
