@@ -219,21 +219,19 @@ void blake256_final( private state256 *S, global uint32_t *out)
   U32TO8_BIG( tmp + 24, S->h[6] );
   U32TO8_BIG( tmp + 28, S->h[7] );
 
-  for(int i = 0; i < 16; i++) 
+  for(int i = 0; i < 8; i++) 
   {
     out[i] = ((uint32_t*) tmp)[i];
   }
 }
 
 
-kernel void blake256_hash_block( global uint8_t *out, global const uint32_t *in, const uint32_t chunk_size)
+kernel void blake256_hash_block( global uint8_t *out, global const uint8_t *in, const uint32_t chunk_size)
 {
   const int gx = get_global_id(0);
   const int lx = get_local_id(0);
 
-  const int chunk_size_int = chunk_size / sizeof(uint32_t);
-
-  global uint8_t* item_in  = &( in[gx * chunk_size_int]);
+  global uint8_t* item_in  = &( in[gx * chunk_size] );
   global uint8_t* item_out = &(out[gx * 32]);
   private state256 S;
   
